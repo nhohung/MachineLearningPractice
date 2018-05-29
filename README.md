@@ -8,5 +8,6 @@ There are another 2 files in this repo:
 The html file can be read directly from the following address:
 https://nhohung.github.io/MachineLearningPractice/
 
-Thanks for looking at my project.
+Thanks for looking at my project.  
+
 Hung
