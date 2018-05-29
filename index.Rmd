@@ -1,0 +1,211 @@
+---
+title: "Barbell lifts analysis"
+author: "Hung Dinh"
+date: "May 27, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary  
+
+With various wearable devices, it is now possible to collect a large amount of data about personal activity relatively inexpensively. The data in this project is measured from accelerometers on the belt, forearm, arm, and dumbell of 6 participants (http://groupware.les.inf.puc-rio.br/har). They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set.  
+
+My cross validation approach is using random subsampling into training and validating sets. I try 3 different prediction methods, namely Decision tree, Random forest, and Gradient boosting machine (gbm) with and without principle component analysis (pca). The results show that Random forest is the best method on this data with validation accuracy of 99%.  
+
+For this project, I found out that no figure is necessary in term of conveying the model information, except the decision tree. However it turns out that this method performs worst, therefore in the end I decice not to include any figure for the training process.  
+
+# Loading library and data  
+
+```{r load lib, data}
+set.seed(12345)
+library(caret); library(e1071); library(randomForest); library(gbm)
+
+# Load training data
+tr <- read.csv("pml-training.csv", na.strings = c("NA",""," "))
+```
+
+#  Exploratory analysis and data cleaning  
+
+Now let's have a look at the data:
+
+```{r exploratory analysis}
+dim(tr)
+head(tr[,5:15],3)   # a first few rows and columns
+```
+
+The data has 19622 observations of 160 variables (the last one is the outcome). There are some variables with many NAs. I also found that **new_window** has **406** values of **yes** (`summary(tr$new_window)`), and it corresponds to the number of NA in other variables (`summary(tr$kurtosis_yaw_belt)`: 19622 - 406 = 19216). Therefore, my first step is removing these columns:  
+
+```{r cleaning}
+na_count <- data.frame(sapply(tr, function(tr) sum(length(which(is.na(tr))))))
+skipcol <- na_count == 19216
+skipcol <- as.logical(skipcol)
+tr1 <- tr[, -which(skipcol == 1)]
+```
+
+The data now has 60 variables. I now plot all data to see if any variable could be factorized. A boxplot is useful to detect outlier but a regular plot even shows outliers better and indicate factorable varialbes:  
+
+```{r display pairs}
+par(mfrow = c(6,10), mar=c(1,1,1,1))
+for (i in 1:60)
+{
+    plot(tr1[,i], pch = 20, col = "blue")
+}
+```
+
+We can see some outliers in the data at columns 38, 39, 40, 45, 51, 52, 53. I will remove the points which is beyond 75th accummulated quantile from the data, then remove the first 7 variables that have nothing to do in prediction (time and index).  
+
+```{r cleaning cont.}
+ol38<-as.numeric(tr1$gyros_dumbbell_x<(quantile(tr1$gyros_dumbbell_x)[1]+quantile(tr1$gyros_dumbbell_x)[2])/2)
+ol39<-as.numeric(tr1$gyros_dumbbell_y>(quantile(tr1$gyros_dumbbell_y)[4]+quantile(tr1$gyros_dumbbell_y)[5])/2)
+ol40<-as.numeric(tr1$gyros_dumbbell_z>(quantile(tr1$gyros_dumbbell_z)[4]+quantile(tr1$gyros_dumbbell_z)[5])/2)
+ol45<-as.numeric(tr1$magnet_dumbbell_y<(quantile(tr1$magnet_dumbbell_y)[1]+quantile(tr1$magnet_dumbbell_y)[2])/2)
+ol51<-as.numeric(tr1$gyros_forearm_x<(quantile(tr1$gyros_forearm_x)[1]+quantile(tr1$gyros_forearm_x)[2])/2)
+ol52<-as.numeric(tr1$gyros_forearm_y>(quantile(tr1$gyros_forearm_y)[4]+quantile(tr1$gyros_forearm_y)[5])/2)
+ol53<-as.numeric(tr1$gyros_forearm_z>(quantile(tr1$gyros_forearm_z)[4]+quantile(tr1$gyros_forearm_z)[5])/2)
+skiprow <- ol38 + ol39 + ol40 + ol45 + ol51 + ol52 + ol53
+
+tr2 <- tr1[-which(skiprow > 0),]
+tr4 <- tr2[,-c(1:7)]
+
+dim(tr4)
+```
+
+The data now has 19620 observations of 53 variables (the last column is the outcome).  
+
+# Cross validation and data preprocessing  
+
+I divide the training data into 2 parts: training and validation sets. For simplicity I use random subsampling instead of k-fold. Since the sample size is moderate (about 20000), my dividing ratio between training/validation samples is: 70% vs. 30%.  
+
+```{r divide data train/validation}
+inTrain <- createDataPartition(y=tr4$classe, p=0.7, list=FALSE)
+tr4tr <- tr4[inTrain, ]
+tr4val <- tr4[-inTrain, ]
+```
+
+Now I normalize the data  
+
+```{r normalize data}
+preprocess <- preProcess(tr4tr, method = c("center", "scale"))   # build the preprocess "template"
+tr4trp <- predict(preprocess, tr4tr)                             # apply the template on the training data
+tr4valp <- predict(preprocess, tr4val)                           # apply the template on the validation data
+```
+
+# Strategy  
+
+I will train different models using training set. Three models will be tried:  
+
+- Decision tree  
+
+- Random forest  
+
+- Gradient boosting machine (gbm).  
+
+These trained models are then applied on the validation set. I will then pick the best model based on its accuracy performance on the validation set. Please note that model optimization and tuning is not focused on this project. So, most of the model parameters are kept as default.  
+
+Because training is time consuming, I extend the project by applying PCA before model training. PC transformation is applied on the training data so that 90% of the variance is preserved, then the transformed PC will be used to train, using the best methods seclected before.  
+
+At the end, I will compare all methods, in terms of performance and time duration. The best one will be applied on the test set for prediction.  
+
+# Train and validate models without PCA  
+
+## Decision tree  
+
+```{r decision tree}
+# Training
+start_time <- Sys.time()
+fit_dt <- train(classe ~ ., data=tr4trp, method="rpart", trControl=trainControl(method="none"), tuneGrid=data.frame(cp=0.01))
+(Sys.time() - start_time)
+# Validating
+predTr_dt <- predict(fit_dt, tr4valp)
+confusionMatrix(predTr_dt, tr4valp$classe)
+```
+
+## Random forest  
+
+```{r random forest}
+# Training
+start_time <- Sys.time()
+fit_rf <- train(classe ~ ., data = tr4trp, method = "rf")
+(Sys.time() - start_time)
+# Validaing
+predTr_rf <- predict(fit_rf, tr4valp)
+confusionMatrix(predTr_rf, tr4valp$classe)
+```
+
+## GBM  
+
+```{r gbm}
+# Training
+start_time <- Sys.time()
+fit_gbm <- train(classe ~ ., data = tr4trp, method="gbm", verbose=FALSE)
+(Sys.time() - start_time)
+# Validation
+predTr_gbm <- predict(fit_gbm, tr4valp)
+confusionMatrix(predTr_gbm, tr4valp$classe)
+```
+
+## Interpretation  
+
+Comparing 3 methods, the validation accuracy of Decision tree, Random forest and GBM are: 75%, 99%, 96%, respectively. The expected out of sample error for each of them are therefore: 25%, 1%, 4%, respectively.  
+
+Based from this result, the Random forest is the most robust method. However it is the most time consuming one (~53 minutes) compared to Decision tree (~1 seconds) and GBM (~23 minutes).  
+
+The next step of my analysis is apply PCA on the best 2 methods (Random forest and GBM), then train the models again to see how they perform.  
+
+Note: I can show a figure of the decision tree, but since I don't use it, there is no need to show it.  
+
+# Train and validate Random forest and GBM with PCA  
+
+## PCA processing  
+
+```{r pca processing}
+preprocessPCA <- preProcess(tr4tr[,-53], method = "pca", thresh = 0.9)
+preprocessPCA
+
+trainPCA <- predict(preprocessPCA, tr4tr[,-53])
+valPCA <- predict(preprocessPCA,tr4val[,-53])
+```
+
+The analysis suggests that with 90% variance coverage, it requires only 20 principle components (instead of 52 variables) for training.  
+
+## Random forest  
+
+```{r pca random forest}
+start_time <- Sys.time()
+fit_pca_rf <- train(tr4tr$classe, method = "rf", verbose=FALSE, x=trainPCA)
+(Sys.time() - start_time)
+confusionMatrix(tr4val$classe,predict(fit_pca_rf, valPCA))
+```
+
+## GBM  
+
+```{r pca gbm}
+start_time <- Sys.time()
+fit_pca_gbm <- train(tr4tr$classe, method="gbm", verbose=FALSE, x=trainPCA)
+(Sys.time() - start_time)
+confusionMatrix(tr4val$classe,predict(fit_pca_gbm, valPCA))
+```
+
+## Interpretation  
+
+The results show that with more than half of the features, training time is almost haved: ~24 minutes for Random forest and ~12 minutes for GBM. The validation accuracy is reduced to 97% and 80% accordingly. With PCA, Random forest performs similarly to GBM without PCA.  
+
+In reality, the selection between Random forest with or without PCA depends on the project (sample size, model update requirement...). For this project, and even when I didn't perform any deep parameter tuning, I pick Random forest without PCA as my final model.  
+
+# Prediction on Test set  
+
+As the training set is normalized prior to training, the test set needs to be processed that way.  
+
+```{r predict test}
+# Process
+ts <- read.csv("pml-testing.csv", na.strings = c("NA",""," "))
+ts1 <- ts[, -which(skipcol == 1)]
+ts4 <- ts1[,-c(1:7)]
+ts4valp <- predict(preprocess, ts4)
+# Prediction
+predTs <- predict(fit_rf, ts4valp)
+predTs
+```
